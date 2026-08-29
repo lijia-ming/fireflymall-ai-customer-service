@@ -14,7 +14,8 @@ if hf_conf['mirror']:
 if hf_conf['download_dir']:
     os.environ['HF_HOME'] = str(ROOT_BASE_DIR_PATH / hf_conf['download_dir'])
 
-from agent.main_agent import UserContext, graph
+from agent.main_agent import UserContext
+from main import graph
 from langchain_core.messages import AIMessageChunk
 from Tools.stream_route_text import RouteJsonStreamFilter
 

@@ -34,7 +34,7 @@ from SPO.route_results import RouteResponse
 from SPO.state import UserContext
 from Tools.log_settings import LogSetting
 from Tools.stream_route_text import RouteJsonStreamFilter
-from agent.main_agent import graph
+from main import graph
 from model.injection_detector import detector
 from routes.file import UPLOAD_DIR
 

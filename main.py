@@ -8,6 +8,14 @@ import redis
 from anthropic import BaseModel
 from fastapi import FastAPI, Request
 import jwt
+from langgraph.cache.sqlite import SqliteCache
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.graph import StateGraph
+from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
+from langgraph.store.postgres import AsyncPostgresStore
+from langgraph.types import Checkpointer
 from pydantic import Field
 from starlette.middleware.cors import CORSMiddleware
 from starlette.datastructures import State
@@ -16,6 +24,8 @@ from starlette.responses import JSONResponse
 from SPO.route_results import RouteResponse, ResultCode
 from Tools.jwt_key_manage import KeyManage
 from Tools.log_settings import LogSetting
+from agent.main_agent import builder
+from load_config.config import ROOT_BASE_DIR_PATH, config
 from routes.file import route as file_route
 from routes.ai_chat import route as ai_chat_route
 from routes.manager import route as manager_route
@@ -23,6 +33,13 @@ from routes.manager import route as manager_route
 logger = LogSetting.create(__name__)
 redis_pool = redis.ConnectionPool(host='localhost', port=6379, decode_responses=True, password='123456')
 redis_con = redis.Redis(connection_pool=redis_pool)
+
+_postgres_conf = config.get('databases').get('postgres')
+_postgres_url = f"postgresql://{_postgres_conf.get('user')}:{_postgres_conf.get('password')}@{_postgres_conf.get('host')}:{_postgres_conf.get('port')}/{_postgres_conf.get('db')}?sslmode=disable"
+
+postgres_check = AsyncPostgresSaver.from_conn_string(_postgres_url)
+postgres_store = AsyncPostgresStore.from_conn_string(_postgres_url)
+graph = None
 
 
 class ParsedTokenData(BaseModel):
@@ -74,8 +91,35 @@ def verify_token(token: str) -> ParsedTokenData | bool:
             return False
 
 
+async def create_graph(
+        graph_build: StateGraph,
+        store: Optional[BaseStore] = None,
+        check: Optional[Checkpointer] = None
+):
+    """
+    当 store 与 check 均为None时，默认使用InMemoryStore和InMemorySaver
+    """
+    global graph
+    if (not store or isinstance(store, InMemoryStore)) and (not check or isinstance(check, InMemorySaver)):
+        graph = graph_build.compile(
+            checkpointer=InMemorySaver(),
+            store=InMemoryStore(),
+            cache=SqliteCache(path=ROOT_BASE_DIR_PATH / 'cache/agent_cache.db')
+        )
+    async with store, check:
+        if hasattr(check, 'setup'):
+            await check.setup()
+        graph = graph_build.compile(
+            checkpointer=check,
+            store=store,
+            cache=SqliteCache(path=ROOT_BASE_DIR_PATH / 'cache/agent_cache.db')
+        )
+
+
 @asynccontextmanager
 async def lifespan(api: FastAPI):
+    global graph
+    await create_graph(builder, postgres_store, postgres_check)
     key_manage = KeyManage()
     key_manage.start()
     from Tools.middleware.memory.memory_rag import start_consumers
@@ -87,6 +131,7 @@ async def lifespan(api: FastAPI):
     logger.info("=" * 60)
     yield
     key_manage.shutdown()
+    graph = None
     logger.info("应用已关闭")
 
 
@@ -123,7 +168,7 @@ def start_app():
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        # 暴露自定义响应头，前端才能读到 replace_jwt（旧密钥换发新 token 的信号）
+        # 自定义响应头
         expose_headers=["replace_jwt"],
     )
     app.state = State()
