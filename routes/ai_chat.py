@@ -167,6 +167,19 @@ def _streaming_response(thread_id: str, payload: dict) -> StreamingResponse:
     )
 
 
+@route.get('/health')
+async def health_check():
+    """
+    健康检查端点（供 Docker/K8s 探针使用）
+    """
+    from main import graph
+    return {
+        'status': 'ok',
+        'graph_ready': graph is not None,
+        'service': 'intelligent-customer-service',
+    }
+
+
 @route.post('/chat')
 async def chat(body: ChatRequest, request: Request):
     """

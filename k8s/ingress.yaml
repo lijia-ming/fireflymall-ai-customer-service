@@ -1,0 +1,43 @@
+# ============================================================
+# Ingress — 外部访问入口
+# 需要集群中安装 Ingress Controller（如 nginx-ingress）
+# ============================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: intelligent-cs-ingress
+  namespace: intelligent-cs
+  labels:
+    app: intelligent-customer-service
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # SSE 支持
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Connection '';
+      chunked_transfer_encoding on;
+      proxy_buffering off;
+      proxy_cache off;
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: cs-api.your-domain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: intelligent-cs-service
+                port:
+                  number: 8000
+  # 如果使用 TLS，取消以下注释并配置证书
+  # tls:
+  #   - hosts:
+  #       - cs-api.your-domain.com
+  #     secretName: intelligent-cs-tls

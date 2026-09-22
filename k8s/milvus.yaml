@@ -1,0 +1,251 @@
+# ============================================================
+# Milvus — 向量数据库（RAG）
+# 注意：生产环境建议使用 Milvus Operator 管理
+# 此处为 standalone 模式，适合开发/测试
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus
+  namespace: intelligent-cs
+  labels:
+    app: milvus
+    component: vector-database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus
+  template:
+    metadata:
+      labels:
+        app: milvus
+        component: vector-database
+    spec:
+      containers:
+        - name: milvus
+          image: milvusdb/milvus:v2.4.8
+          command:
+            - milvus
+            - run
+            - standalone
+          ports:
+            - containerPort: 19530
+              name: grpc
+            - containerPort: 9091
+              name: http
+          env:
+            - name: ETCD_ENDPOINTS
+              value: "milvus-etcd:2379"
+            - name: MINIO_ADDRESS
+              value: "milvus-minio:9000"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/milvus
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 4
+              memory: 8Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: milvus-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus-service
+  namespace: intelligent-cs
+  labels:
+    app: milvus
+    component: vector-database
+spec:
+  selector:
+    app: milvus
+  ports:
+    - port: 19530
+      targetPort: 19530
+      name: grpc
+    - port: 9091
+      targetPort: 9091
+      name: http
+  type: ClusterIP
+
+---
+# Milvus 依赖的 etcd
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus-etcd
+  namespace: intelligent-cs
+  labels:
+    app: milvus-etcd
+    component: vector-database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus-etcd
+  template:
+    metadata:
+      labels:
+        app: milvus-etcd
+        component: vector-database
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.16
+          command:
+            - etcd
+          args:
+            - --advertise-client-urls=http://0.0.0.0:2379
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --data-dir=/etcd
+            - --auto-compaction-mode=revision
+            - --auto-compaction-retention=1000
+            - --quota-backend-bytes=4294967296
+            - --snapshot-count=50000
+          ports:
+            - containerPort: 2379
+              name: client
+            - containerPort: 2380
+              name: peer
+          volumeMounts:
+            - name: data
+              mountPath: /etcd
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus-etcd
+  namespace: intelligent-cs
+  labels:
+    app: milvus-etcd
+    component: vector-database
+spec:
+  selector:
+    app: milvus-etcd
+  ports:
+    - port: 2379
+      targetPort: 2379
+      name: client
+  type: ClusterIP
+
+---
+# Milvus 依赖的 MinIO（S3 兼容对象存储）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milvus-minio
+  namespace: intelligent-cs
+  labels:
+    app: milvus-minio
+    component: vector-database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milvus-minio
+  template:
+    metadata:
+      labels:
+        app: milvus-minio
+        component: vector-database
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-01-01T16-36-33Z
+          command:
+            - minio
+            - server
+            - /minio
+            - --console-address
+            - ":9001"
+          env:
+            - name: MINIO_ROOT_USER
+              value: "minioadmin"
+            - name: MINIO_ROOT_PASSWORD
+              value: "minioadmin"
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          volumeMounts:
+            - name: data
+              mountPath: /minio
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 2Gi
+      volumes:
+        - name: data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: milvus-minio
+  namespace: intelligent-cs
+  labels:
+    app: milvus-minio
+    component: vector-database
+spec:
+  selector:
+    app: milvus-minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+      name: api
+    - port: 9001
+      targetPort: 9001
+      name: console
+  type: ClusterIP

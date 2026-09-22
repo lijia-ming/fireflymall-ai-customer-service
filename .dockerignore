@@ -1,0 +1,50 @@
+# ---------- 环境变量与密钥 ----------
+.env
+.env.local
+*.env
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- IDE ----------
+.idea/
+.vscode/
+*.iml
+
+# ---------- 前端产物（独立仓库维护，本服务不挂载 StaticFiles） ----------
+static/
+
+# ---------- 版本控制 ----------
+.git/
+.gitignore
+
+# ---------- 运行时数据（由 volume 挂载） ----------
+data/
+cache/
+database/
+log/
+huggingface_cache/
+*.db
+*.sqlite3
+
+# ---------- 本地配置文件（由 volume 挂载或 ConfigMap 注入） ----------
+config.yaml
+
+# ---------- 文档 ----------
+README.md
+README.en.md
+FAQ.md
+LICENSE
+graph.png

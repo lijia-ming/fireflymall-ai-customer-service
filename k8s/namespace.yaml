@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: intelligent-cs
+  labels:
+    app: intelligent-customer-service
+    environment: production

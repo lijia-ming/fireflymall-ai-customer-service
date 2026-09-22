@@ -1,0 +1,116 @@
+# ============================================================
+# Docker 环境专用配置
+# 服务地址使用 Docker Compose 服务名，而非 localhost
+# 部署时将本文件映射为容器内的 config.yaml
+# ============================================================
+
+server:
+  host: 0.0.0.0
+  port: 8000
+
+logging:
+  level: 'DEBUG'
+  file_path: './log'
+  formatter: '%(asctime)s [%(threadName)s - %(thread)d] %(levelname)s %(filename)s [%(funcName)s/%(lineno)d] %(message)s'
+  create_file: true
+  max_bytes: 5MB
+  backup_count: 2
+
+redis:
+  host: redis
+  port: 6379
+  password: '123456'
+  db: 0
+  max_connections: 20
+
+AMQP:
+  rabbitmq:
+    username: fufu
+    password: '123456'
+    host: rabbitmq
+    port: 5672
+    virtual_host: /
+    heartbeat: 600
+    connection_attempts: 3
+    retry_delay: 5
+
+file:
+  upload_dir: './data/uploads'
+  download_dir: './data/downloads'
+
+model:
+  name: 'deepseek-v4-flash'
+  params:
+    temperature: 0.8
+    extra_body:
+      thinking:
+        type: 'disabled'
+  vision:
+    name: 'qwen3.7-plus'
+  vocation:
+    name: 'customer service'
+  summary:
+    name: 'deepseek-v4-flash'
+    kwargs:
+      temperature: 1.3
+      extra_body:
+        thinking:
+          type: 'disabled'
+      profile:
+        max_input_tokens: 1m
+    pattern: 'fraction'
+    trigger_threshold: 0.8
+
+huggingface:
+  mirror: true
+  download_dir: ./huggingface_cache
+
+databases:
+  mysql:
+    host: mysql
+    port: 3306
+    user: root
+    password: '123456'
+    db: fireflymall
+  postgres:
+    host: postgres
+    port: 5432
+    user: postgres
+    password: '123456'
+    db: fireflymall
+  rag:
+    sqlite:
+      db_url: './database/test1.db'
+    es:
+      db_url: 'http://elasticsearch:9200'
+      index_name: 'goods'
+      username: 'elastic'
+      password: '123456'
+    milvus:
+      collection_name: firefly_mall_faq
+      primary_field: pk
+      metadata_field: metadata
+      text_field: text
+      conn_args:
+        uri: http://milvus:19530
+        token: root:Milvus
+        db_name: firefly_mall
+      index_params:
+        index_type: IVF_FLAT
+        metric_type: COSINE
+        params:
+          nlist: 128
+      search_params:
+        metric_type: COSINE
+        params:
+          nprobe: 10
+      level: Strong
+      drop_old: false
+
+email:
+  smtp: 'smtp.qq.com'
+  port: 465
+  sender: 'your-email@qq.com'          # 请替换为真实发件邮箱
+  sender_name: 'your-name'             # 请替换为发件人名称
+  receiver:
+    - 'your-email@qq.com'              # 请替换为接收告警的邮箱

@@ -31,7 +31,20 @@ from routes.ai_chat import route as ai_chat_route
 from routes.manager import route as manager_route
 
 logger = LogSetting.create(__name__)
-redis_pool = redis.ConnectionPool(host='localhost', port=6379, decode_responses=True, password='123456')
+
+# 探针端点豁免鉴权：Docker HEALTHCHECK 与 K8s liveness/readiness/startup 探针不携带 token
+AUTH_EXEMPT_PATHS = frozenset({'/ai/health'})
+
+# 必须走 config 而非硬编码 localhost：容器内 Redis 是独立服务（compose 服务名 / K8s Service 名）
+_redis_conf = config.get('redis')
+redis_pool = redis.ConnectionPool(
+    host=_redis_conf.get('host', 'localhost'),
+    port=_redis_conf.get('port', 6379),
+    db=_redis_conf.get('db', 0),
+    password=_redis_conf.get('password'),
+    max_connections=_redis_conf.get('max_connections', 20),
+    decode_responses=True
+)
 redis_con = redis.Redis(connection_pool=redis_pool)
 
 _postgres_conf = config.get('databases').get('postgres')
@@ -140,6 +153,10 @@ def start_app():
 
     @app.middleware("http")
     async def add_process_time_header(request: Request, call_next):
+        # 健康检查端点直接放行：探针不带 token，若走鉴权会返回 401，
+        # 导致容器永远 unhealthy、K8s 探针失败反复重启 Pod
+        if request.url.path in AUTH_EXEMPT_PATHS:
+            return await call_next(request)
         # 在请求前验证token是否有效
         authorization = request.headers.get("Authorization")
         if not authorization:

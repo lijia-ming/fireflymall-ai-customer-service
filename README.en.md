@@ -55,6 +55,11 @@ resolved":
 ├── run.py                   # Startup script: configures HF mirror/cache dirs, then boots uvicorn
 ├── config.yaml.template     # Global config template: copy to config.yaml before use (models, databases, memory-framework tuning; see Configuration)
 ├── .env.template            # Environment-variable template (API keys etc.; the real .env is never committed)
+├── Dockerfile               # Image build: multi-stage (builder installs deps -> slim runtime)
+├── docker-compose.yaml      # Full-stack orchestration: app + 7 dependencies in one command
+├── config.docker.yaml       # In-container config: services addressed by name, mounted as config.yaml
+├── .dockerignore            # Build-context exclusions (secrets, runtime data, frontend assets)
+├── k8s/                     # Kubernetes manifests (kustomize; see Containerized Deployment)
 ├── SPO/                     # Structured objects layer (State / models / responses)
 │   ├── state.py             #   LangGraph state, input/output schemas, route classification
 │   ├── memory.py            #   Memory data models: UserProfile, MemoryFragments, SummaryMemoryAi
@@ -248,14 +253,20 @@ manual_intervention).
 
 ### 1. Environment Dependencies
 
-| Dependency          | Purpose                                                      |
-|---------------------|--------------------------------------------------------------|
-| Python 3.10+        | Runtime                                                      |
-| Redis               | JWT keys, memory-fragment cursors                            |
-| RabbitMQ            | Memory-processing failure retry queues                       |
-| Milvus              | FAQ vector search                                            |
-| SQLite + sqlite-vec | Memory-fragment vector store (sqlite-vec extension required) |
-| MySQL (optional)    | Mall business data (currently runs on test stubs)            |
+| Dependency          | Purpose                                                                  | Required |
+|---------------------|--------------------------------------------------------------------------|----------|
+| Python 3.10+        | Runtime                                                                  | ✅       |
+| Redis               | JWT keys, memory-fragment cursors                                        | ✅       |
+| RabbitMQ            | Memory-processing failure retry queues                                   | ✅       |
+| Milvus              | FAQ vector search                                                        | ✅       |
+| Elasticsearch       | Product search (pre-sales tools; **connects at import time, not optional**) | ✅       |
+| SQLite + sqlite-vec | Memory-fragment vector store (sqlite-vec extension required)             | ✅       |
+| PostgreSQL          | LangGraph Checkpoint / Store persistence                                 | ✅       |
+| MySQL               | Mall business data (currently runs on test stubs)                        | Optional |
+
+> Elasticsearch is a **hard dependency**: `Tools/product_process.py` calls `connect_to_elasticsearch` at module
+> import time, and that module is imported by `main.py` via `agent/front_desk_salesperson.py`. If ES is
+> unreachable the application fails during startup.
 
 ### 2. Install Dependencies
 
@@ -326,11 +337,210 @@ After startup, visit `http://127.0.0.1:8000`. API docs at `http://127.0.0.1:8000
 
 | Method | Path                   | Description                                                |
 |--------|------------------------|------------------------------------------------------------|
+| GET    | `/ai/health`           | Health check (**no auth**, used by container probes)       |
 | POST   | `/ai/chat`             | User chat (SSE streaming)                                  |
 | POST   | `/ai/human/end`        | End human-agent service (AI relays the closing words)      |
 | GET    | `/ai/history`          | Conversation history (for the human agent before takeover) |
 | POST   | `/files/upload`        | File upload                                                |
 | GET    | `/manager/get/all/faq` | Get FAQ list                                               |
+
+> Except for `/ai/health`, every endpoint goes through the JWT middleware in `main.py` and requires
+> `Authorization: Bearer <token>`.
+
+### 6. Containerized Deployment
+
+Pick by scenario: **run the image directly** (6.2 — lightest when Redis / Milvus etc. already exist),
+**Docker Compose** (6.3 — full stack on a single host, good for local verification and demos), or
+**Kubernetes** (6.4 — the `k8s/` directory, organized with kustomize).
+
+#### 6.1 Building the Image
+
+```bash
+# Build from the repository root (uses ./Dockerfile and ./requirements.txt)
+docker build -t intelligent-customer-service:latest .
+
+# Inspect the result
+docker images intelligent-customer-service
+```
+
+What to know about the image:
+
+- **Multi-stage build**: the `builder` stage installs build deps and Python packages; the `runtime` stage
+  only copies `/root/.local`, so no toolchain ships in the final image.
+- **The first build is slow** (installs `torch`, `transformers`, ...); later builds hit the layer cache.
+- **The build context excludes secrets and data**: `.dockerignore` drops `.env`, `config.yaml`, `data/`,
+  `database/`, and `static/` (169MB of frontend assets), so the image ships **no** config file and no API
+  keys — everything is injected at runtime.
+- **Two model files must be in place before building** (see "Model Files" above): `model/roberta_inj.onnx`
+  (~400MB, injection detection) and `model/hfl/` (tokenizer cache). Neither is committed; without them the
+  build succeeds but the app fails at runtime with `FileNotFoundError`.
+- The image bakes in `HF_ENDPOINT=https://hf-mirror.com` and `HF_HOME=/app/huggingface_cache` (the
+  container entrypoint is uvicorn, not `run.py`, so the `huggingface` section of `config.yaml` never
+  applies). Override with `-e HF_ENDPOINT=https://huggingface.co` if you are outside China.
+
+Push to a registry (needed for multi-node Kubernetes):
+
+```bash
+docker tag intelligent-customer-service:latest <registry>/intelligent-customer-service:v1.0.0
+docker push <registry>/intelligent-customer-service:v1.0.0
+# then point k8s/app.yaml's image at that address
+```
+
+#### 6.2 Running the Container Directly (docker run)
+
+For when Redis / PostgreSQL / MySQL / RabbitMQ / Milvus / Elasticsearch already exist and you only want
+to run the app.
+
+```bash
+# 1) Environment variables: put real API keys in .env (not committed)
+cp .env.template .env
+
+# 2) Run (in PowerShell use ${PWD} for the path)
+docker run -d --name intelligent-app \
+  -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/config.docker.yaml:/app/config.yaml:ro" \
+  -v app-uploads:/app/data \
+  -v app-database:/app/database \
+  intelligent-customer-service:latest
+
+# 3) Health check (no auth)
+curl http://localhost:8000/ai/health
+```
+
+Paths the container mounts / writes to:
+
+| Container path          | Contents                                              | Required?                                  |
+|-------------------------|-------------------------------------------------------|--------------------------------------------|
+| `/app/config.yaml`      | App config (mount `config.docker.yaml`)               | **Required** — starts with `FileNotFoundError` without it |
+| `/app/data`             | Uploaded / downloaded files                           | Persist recommended                        |
+| `/app/database`         | SQLite memory store (`test1.db`)                      | Persist recommended                        |
+| `/app/cache`            | LangGraph SQLite cache                                | Optional — losing it only drops the cache  |
+| `/app/log`              | Logs                                                  | Optional                                   |
+| `/app/huggingface_cache` | HF model cache (image points `HF_HOME` here)         | Optional — speeds up cold starts           |
+
+> **Networking caveat**: `config.docker.yaml` uses compose service names as dependency hosts
+> (`redis` / `postgres` / `mysql` / `rabbitmq` / `milvus` / `elasticsearch`), which a standalone
+> `docker run` container cannot resolve. Two options:
+> (1) join the network compose created — find the real name with `docker network ls` (compose prefixes it
+> with the project name), then add `--network <that name>`;
+> (2) copy the config and change the hosts to your host machine (use `host.docker.internal` on Docker
+> Desktop), making sure the dependency ports are published (6379 / 5432 / 3306 / 5672 / 19530 / 9200).
+
+#### 6.3 Docker Compose
+
+```bash
+# 1) Environment variables: put real API keys in .env (not committed)
+cp .env.template .env
+
+# 2) Bring up the full stack: app + redis / postgres / rabbitmq / mysql / milvus(+etcd+minio) / elasticsearch
+docker compose up -d
+
+# 3) Check status and logs
+docker compose ps
+docker compose logs -f app
+
+# 4) Health check (no auth)
+curl http://localhost:8000/ai/health
+```
+
+- The app is configured by `config.docker.yaml` (dependency hosts already point at the compose service
+  names), mounted as the in-container `config.yaml` — your local `config.yaml` is left untouched.
+- Every dependency has a healthcheck; the app waits for them via `depends_on: service_healthy`.
+- The first run builds the image (installs `torch`, `transformers`, etc.) and takes a while; later runs hit
+  the layer cache.
+- Allocate **≥ 8GB** to Docker: Milvus + Elasticsearch + MySQL + PostgreSQL all run at once.
+
+Common maintenance commands:
+
+| Task                              | Command                                  |
+|-----------------------------------|------------------------------------------|
+| Build / rebuild the app image     | `docker compose build app`               |
+| Restart only the app              | `docker compose restart app`             |
+| Follow logs                       | `docker compose logs -f app`             |
+| Shell into the container          | `docker compose exec app bash`           |
+| Stop and remove containers (keep volumes) | `docker compose down`            |
+| Also remove the data volumes      | `docker compose down -v`                 |
+
+#### 6.4 Kubernetes
+
+```bash
+# 1) Replace the placeholders in secret.yaml with real values (API keys / DB passwords)
+#    base64 helper: echo -n "your-value" | base64
+
+# 2) Deploy everything (kustomize)
+kubectl apply -k k8s/
+
+# 3) Check status
+kubectl get all -n intelligent-cs
+kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs
+
+# 4) Reach it from outside the cluster (port-forward, when Ingress is not ready)
+kubectl port-forward -n intelligent-cs svc/intelligent-cs-service 8000:8000
+curl http://localhost:8000/ai/health
+```
+
+| File                   | Contents                                                                        |
+|------------------------|---------------------------------------------------------------------------------|
+| `k8s/namespace.yaml`   | Namespace `intelligent-cs`                                                      |
+| `k8s/pvc.yaml`         | 7 PVCs (postgres / mysql / redis / rabbitmq / app / milvus / es)                |
+| `k8s/secret.yaml`      | API keys and dependency passwords (**replace placeholders before deploying**)  |
+| `k8s/configmap.yaml`   | The app's `config.yaml` (services addressed via in-cluster DNS)                 |
+| `k8s/*.yaml`           | Deployment + Service for redis / postgres / rabbitmq / mysql / milvus / elasticsearch |
+| `k8s/app.yaml`         | App Deployment + Service (initContainer for dirs, three probe types)            |
+| `k8s/ingress.yaml`     | External entry point (requires an Ingress Controller; includes SSE passthrough) |
+
+**First, get the image into the cluster** — pick one:
+
+```bash
+# Option A: push to a registry, nodes pull it themselves (production)
+#           point k8s/app.yaml's image at <registry>/intelligent-customer-service:v1.0.0;
+#           private registries also need imagePullSecrets
+docker push <registry>/intelligent-customer-service:v1.0.0
+
+# Option B: kind (most common for local dev)
+kind load docker-image intelligent-customer-service:latest
+
+# Option C: minikube
+minikube image load intelligent-customer-service:latest
+```
+
+> `k8s/app.yaml` uses `intelligent-customer-service:latest` with `imagePullPolicy: IfNotPresent`
+> precisely to support the local image loading in options B/C (switching it to `Always` makes nodes try
+> the registry and fail with `ImagePullBackOff`). For registry-based deploys (option A), prefer versioned
+> tags so nodes do not reuse a stale `latest` cache.
+
+Common maintenance commands:
+
+| Task                                | Command                                                          |
+|-------------------------------------|------------------------------------------------------------------|
+| All resource status                 | `kubectl get all -n intelligent-cs`                              |
+| App logs                            | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`    |
+| Shell into the container            | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
+| Rolling restart                     | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs` |
+| Why a Pod will not start            | `kubectl describe pod -n intelligent-cs -l component=api`        |
+| Delete everything (keeps PVCs)      | `kubectl delete -k k8s/`                                         |
+
+**Constraints and pitfalls baked into these manifests — read before changing them:**
+
+- **The app runs a single replica** (`replicas: 1`; the HPA is commented out). `app-data-pvc` is
+  `ReadWriteOnce`, so a second replica on another node cannot mount it; each replica also runs its own
+  `KeyManage` JWT-key rotation, and concurrent rotation overwrites each other and invalidates tokens; the
+  conversation cache is per-Pod local SQLite and is not shared. Scaling out requires fixing all three
+  first — see the comments in `k8s/app.yaml`.
+- **Passwords must be written in two places**: `configmap.yaml` (for the app to connect) and `secret.yaml`
+  (for the infrastructure Pods to start). `config.py` only reads YAML, and its `${path:default}`
+  placeholders are config-tree-internal references that cannot read environment variables, so a Secret
+  alone cannot inject them. A mismatch shows up as "all Pods healthy but the app cannot reach the DB".
+- **The app's `database` subdirectory is created by an initContainer**: it does not exist on a fresh PVC,
+  and the main container's `subPath` mount would otherwise fail with `CreateContainerConfigError`.
+- **Elasticsearch is a hard dependency** and is included; it also ships a privileged initContainer that
+  raises `vm.max_map_count`, without which ES fails to start.
+- **The HuggingFace cache is an emptyDir**: a rebuilt Pod re-downloads the tokenizer. Switch it to a PVC or
+  bake the model into the image if startup time matters.
+- **Image tag and pull policy must match**: currently `latest` + `IfNotPresent`, which pairs with the local
+  image loading in kind / minikube. Switch to a versioned tag (e.g. `:v1.0.0`) when deploying from a
+  registry.
 
 ## Relationship with Firefly Mall
 

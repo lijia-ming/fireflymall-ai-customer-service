@@ -1,0 +1,60 @@
+# ============================================================
+# Kustomization — 一键部署
+#
+# 使用方式：
+#   1. 先修改 secret.yaml 中的占位符为真实值
+#   2. 部署所有资源：
+#      kubectl apply -k k8s/
+#
+#   或者分别部署（顺序有依赖，数据库类需先于 app）：
+#      kubectl apply -f k8s/namespace.yaml
+#      kubectl apply -f k8s/pvc.yaml
+#      kubectl apply -f k8s/secret.yaml
+#      kubectl apply -f k8s/configmap.yaml
+#      kubectl apply -f k8s/redis.yaml
+#      kubectl apply -f k8s/postgres.yaml
+#      kubectl apply -f k8s/rabbitmq.yaml
+#      kubectl apply -f k8s/mysql.yaml
+#      kubectl apply -f k8s/milvus.yaml
+#      kubectl apply -f k8s/elasticsearch.yaml
+#      kubectl apply -f k8s/app.yaml
+#      kubectl apply -f k8s/ingress.yaml
+#
+#   3. 查看状态：
+#      kubectl get all -n intelligent-cs
+# ============================================================
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# 命名空间：不在此处声明 namespace 字段——每个资源文件都已显式写明
+# namespace: intelligent-cs，避免 namespace transformer 作用于
+# 集群级 Namespace 资源时产生版本相关行为。
+# 新增资源文件时请记得自己补上 namespace 字段。
+
+# 所有资源文件
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - secret.yaml
+  - configmap.yaml
+  - redis.yaml
+  - postgres.yaml
+  - rabbitmq.yaml
+  - mysql.yaml
+  - milvus.yaml
+  - elasticsearch.yaml
+  - app.yaml
+  - ingress.yaml
+
+# 通用标签（kustomize v5 起 commonLabels 已弃用，改用 labels + includeSelectors）
+labels:
+  - pairs:
+      project: intelligent-customer-service
+      managed-by: kustomize
+    includeSelectors: true
+
+# 通用注解
+commonAnnotations:
+  description: "流萤商城智能客服系统"
+  maintainer: "devops@your-company.com"

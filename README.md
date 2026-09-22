@@ -46,6 +46,11 @@
 ├── run.py                   # 启动脚本：配置 HF 镜像/缓存目录后拉起 uvicorn
 ├── config.yaml.template     # 全局配置模板：复制为 config.yaml 后使用（模型、数据库、记忆框架调参，见"配置说明"）
 ├── .env.template            # 环境变量模板（API Key 等；真实 .env 不入库）
+├── Dockerfile               # 镜像构建：多阶段构建（builder 装依赖 → runtime 瘦身）
+├── docker-compose.yaml      # 全栈编排：应用 + 7 个依赖服务，一键起完整环境
+├── config.docker.yaml       # 容器内配置：用服务名寻址，挂载为容器内 config.yaml
+├── .dockerignore            # 构建上下文排除项（密钥、运行时数据、前端产物）
+├── k8s/                     # Kubernetes 清单（kustomize 组织，见"容器化部署"章节）
 ├── SPO/                     # 结构化对象层（State/模型/响应）
 │   ├── state.py             #   LangGraph 图状态、输入输出 Schema、路由分类
 │   ├── memory.py            #   记忆数据模型：UserProfile 画像、MemoryFragments 片段、SummaryMemoryAi
@@ -214,14 +219,19 @@ S(m) = α·R(m,q) + β·T(m) + γ·F(m) + δ
 
 ### 1. 环境依赖
 
-| 依赖                  | 用途                          |
-|---------------------|-----------------------------|
-| Python 3.10+        | 运行环境                        |
-| Redis               | JWT 密钥、记忆片段游标               |
-| RabbitMQ            | 记忆处理失败重试队列                  |
-| Milvus              | FAQ 向量检索                    |
-| SQLite + sqlite-vec | 记忆片段向量库（sqlite-vec 需单独安装扩展） |
-| MySQL（可选）           | 商城业务数据（当前以测试桩数据运行）          |
+| 依赖                  | 用途                          | 必装 |
+|---------------------|-----------------------------|----|
+| Python 3.10+        | 运行环境                        | ✅  |
+| Redis               | JWT 密钥、记忆片段游标               | ✅  |
+| RabbitMQ            | 记忆处理失败重试队列                  | ✅  |
+| Milvus              | FAQ 向量检索                    | ✅  |
+| Elasticsearch       | 商品检索（售前工具，**导入期即连接，不可缺**）   | ✅  |
+| SQLite + sqlite-vec | 记忆片段向量库（sqlite-vec 需单独安装扩展） | ✅  |
+| PostgreSQL          | LangGraph Checkpoint / Store 持久化 | ✅  |
+| MySQL               | 商城业务数据（当前以测试桩数据运行）          | 可选 |
+
+> Elasticsearch 是**硬依赖**：`Tools/product_process.py` 在模块导入期就会 `connect_to_elasticsearch`，
+> 而该模块经 `agent/front_desk_salesperson.py` 被 `main.py` 导入，所以 ES 不可达时应用会在启动阶段直接失败。
 
 ### 2. 安装依赖
 
@@ -288,13 +298,201 @@ python run.py
 
 ### 5. 常用接口
 
-| 方法   | 路径                     | 说明                 |
-|------|------------------------|--------------------|
-| POST | `/ai/chat`             | 用户对话（SSE 流式）       |
-| POST | `/ai/human/end`        | 结束人工客服（AI 转达结语）    |
-| GET  | `/ai/history`          | 会话历史（人工客服接手前查看上下文） |
-| POST | `/files/upload`        | 文件上传               |
-| GET  | `/manager/get/all/faq` | 获取 FAQ 列表          |
+| 方法   | 路径                     | 说明                    |
+|------|------------------------|-----------------------|
+| GET  | `/ai/health`           | 健康检查（**免鉴权**，供容器探针使用） |
+| POST | `/ai/chat`             | 用户对话（SSE 流式）          |
+| POST | `/ai/human/end`        | 结束人工客服（AI 转达结语）       |
+| GET  | `/ai/history`          | 会话历史（人工客服接手前查看上下文）    |
+| POST | `/files/upload`        | 文件上传                  |
+| GET  | `/manager/get/all/faq` | 获取 FAQ 列表             |
+
+> 除 `/ai/health` 外，所有接口都经过 `main.py` 的 JWT 中间件校验，需在请求头带 `Authorization: Bearer <token>`。
+
+### 6. 容器化部署
+
+三种用法按场景选：**直接跑镜像**（6.2，已有 Redis / Milvus 等外部依赖时最轻量）、
+**Docker Compose**（6.3，单机一键起全栈，适合本地验证与演示）、**Kubernetes**
+（6.4，`k8s/` 目录，kustomize 组织，适合集群部署）。
+
+#### 6.1 构建镜像
+
+```bash
+# 在仓库根目录构建（依赖 ./Dockerfile 与 ./requirements.txt）
+docker build -t intelligent-customer-service:latest .
+
+# 查看构建结果
+docker images intelligent-customer-service
+```
+
+镜像特点与注意事项：
+
+- **多阶段构建**：`builder` 阶段装编译依赖与 Python 包，`runtime` 阶段只复制 `/root/.local`，
+  镜像里不含编译工具链。
+- **首次构建较慢**：要装 `torch`、`transformers` 等大依赖；后续构建命中层缓存会快很多。
+- **构建上下文已排除密钥与数据**：`.dockerignore` 排除了 `.env`、`config.yaml`、`data/`、`database/`、
+  `static/`（169MB 前端产物）等，所以镜像里**没有**配置文件和 API Key，全靠运行时注入。
+- **构建前请确认两个模型文件就位**（见上文"模型文件说明"）：`model/roberta_inj.onnx`（约 400MB，
+  注入检测）与 `model/hfl/`（tokenizer 缓存）。这两个都不入库，缺了镜像能构建成功但运行时会报
+  `FileNotFoundError`。
+- 镜像内已固化 `HF_ENDPOINT=https://hf-mirror.com` 与 `HF_HOME=/app/huggingface_cache`
+  （容器入口是 uvicorn 而非 `run.py`，`config.yaml` 里的 huggingface 段不会自动生效）。
+  需要海外直连时用 `-e HF_ENDPOINT=https://huggingface.co` 覆盖。
+
+推送到镜像仓库（Kubernetes 多节点部署时需要）：
+
+```bash
+docker tag intelligent-customer-service:latest <registry>/intelligent-customer-service:v1.0.0
+docker push <registry>/intelligent-customer-service:v1.0.0
+# 然后把 k8s/app.yaml 的 image 改成该地址
+```
+
+#### 6.2 直接运行容器（docker run）
+
+适合已经有现成的 Redis / PostgreSQL / MySQL / RabbitMQ / Milvus / Elasticsearch，只想跑应用的场景。
+
+```bash
+# ① 准备环境变量：真实 API Key 写入 .env（不入库）
+cp .env.template .env
+
+# ② 运行（PowerShell 里路径变量用 ${PWD}）
+docker run -d --name intelligent-app \
+  -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/config.docker.yaml:/app/config.yaml:ro" \
+  -v app-uploads:/app/data \
+  -v app-database:/app/database \
+  intelligent-customer-service:latest
+
+# ③ 健康检查（免鉴权）
+curl http://localhost:8000/ai/health
+```
+
+容器内需要挂载 / 会写入的路径：
+
+| 容器内路径                   | 内容                                | 是否必须          |
+|-------------------------|-----------------------------------|---------------|
+| `/app/config.yaml`      | 应用配置（挂载 `config.docker.yaml`）      | **必须**，不挂载启动即 `FileNotFoundError` |
+| `/app/data`             | 上传 / 下载文件                         | 建议持久化         |
+| `/app/database`         | SQLite 记忆库（`test1.db`）             | 建议持久化         |
+| `/app/cache`            | LangGraph SQLite 缓存               | 可选，丢了只是缓存失效   |
+| `/app/log`              | 日志                              | 可选            |
+| `/app/huggingface_cache` | HF 模型缓存（镜像 `HF_HOME` 指向这里）         | 可选，能加速冷启动     |
+
+> **网络注意**：`config.docker.yaml` 里各依赖的 host 写的是 compose 服务名
+> （`redis` / `postgres` / `mysql` / `rabbitmq` / `milvus` / `elasticsearch`），单独 `docker run`
+> 时容器解析不了这些名字。两种做法：
+> ① 加入 compose 创建的网络——先用 `docker network ls` 查到实际网络名（compose 默认带项目名前缀），
+> 再加 `--network <该网络名>`；
+> ② 复制一份配置，把 host 改成宿主机地址（Docker Desktop 用 `host.docker.internal`），
+> 并确保各依赖的端口已映射到宿主机（6379 / 5432 / 3306 / 5672 / 19530 / 9200）。
+
+#### 6.3 Docker Compose
+
+```bash
+# ① 准备环境变量：真实 API Key 写入 .env（不入库）
+cp .env.template .env
+
+# ② 一键起全栈：应用 + redis / postgres / rabbitmq / mysql / milvus(+etcd+minio) / elasticsearch
+docker compose up -d
+
+# ③ 查看状态与日志
+docker compose ps
+docker compose logs -f app
+
+# ④ 健康检查（免鉴权）
+curl http://localhost:8000/ai/health
+```
+
+常用运维命令：
+
+| 场景        | 命令                                     |
+|-----------|----------------------------------------|
+| 构建 / 重建应用镜像 | `docker compose build app`             |
+| 只重启应用     | `docker compose restart app`            |
+| 跟随日志      | `docker compose logs -f app`            |
+| 进入容器      | `docker compose exec app bash`          |
+| 停止并删除容器（保留数据卷） | `docker compose down`                   |
+| 连数据卷一起清掉  | `docker compose down -v`                |
+
+- 应用配置走 `config.docker.yaml`（已把各依赖的 host 改为 compose 服务名），由 compose 挂载为容器内
+  `config.yaml`，无需改本地 `config.yaml`。
+- 依赖服务均配置了 healthcheck，应用通过 `depends_on: service_healthy` 等待其就绪后再启动。
+- 首启动需构建镜像（要装 `torch`、`transformers` 等，耗时较长），后续启动走层缓存。
+- 建议给 Docker 分配 **≥ 8GB** 内存：Milvus + Elasticsearch + MySQL + PostgreSQL 同时常驻。
+
+#### 6.4 Kubernetes
+
+```bash
+# ① 先把 secret.yaml 里的占位符替换为真实值（API Key / 数据库密码）
+#    base64 编码命令：echo -n "your-value" | base64
+
+# ② 一键部署（kustomize）
+kubectl apply -k k8s/
+
+# ③ 查看状态
+kubectl get all -n intelligent-cs
+kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs
+
+# ④ 集群外访问（port-forward，Ingress 未就绪时用）
+kubectl port-forward -n intelligent-cs svc/intelligent-cs-service 8000:8000
+curl http://localhost:8000/ai/health
+```
+
+| 文件                     | 内容                                              |
+|------------------------|-------------------------------------------------|
+| `k8s/namespace.yaml`   | 命名空间 `intelligent-cs`                           |
+| `k8s/pvc.yaml`         | 7 个 PVC（postgres / mysql / redis / rabbitmq / app / milvus / es） |
+| `k8s/secret.yaml`      | API Key 与各依赖的密码（**部署前必须替换占位符**）                  |
+| `k8s/configmap.yaml`   | 应用 `config.yaml`（用集群内 DNS 寻址各服务）                 |
+| `k8s/*.yaml`           | redis / postgres / rabbitmq / mysql / milvus / elasticsearch 各自 Deployment + Service |
+| `k8s/app.yaml`         | 应用 Deployment + Service（含 initContainer 建目录与三类探针） |
+| `k8s/ingress.yaml`     | 外部入口（需集群已装 Ingress Controller，含 SSE 透传配置）        |
+
+**先让集群拿到镜像**，三选一：
+
+```bash
+# 方式 A：推到镜像仓库，节点自行拉取（生产环境做法）
+#        把 k8s/app.yaml 的 image 改成 <registry>/intelligent-customer-service:v1.0.0；
+#        私有仓库还需补 imagePullSecrets
+docker push <registry>/intelligent-customer-service:v1.0.0
+
+# 方式 B：kind（本地开发最常用）
+kind load docker-image intelligent-customer-service:latest
+
+# 方式 C：minikube
+minikube image load intelligent-customer-service:latest
+```
+
+> `k8s/app.yaml` 用的是 `intelligent-customer-service:latest` + `imagePullPolicy: IfNotPresent`，
+> 这正是为了配合方式 B/C 的本地镜像加载（若改成 `Always`，节点会去 registry 拉取而
+> `ImagePullBackOff`）。反之，走方式 A 的仓库部署建议改用版本化标签，避免节点沿用旧的 `latest` 缓存。
+
+常用运维命令：
+
+| 场景            | 命令                                                              |
+|---------------|-----------------------------------------------------------------|
+| 全部资源状态        | `kubectl get all -n intelligent-cs`                             |
+| 应用日志          | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`   |
+| 进入容器          | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
+| 滚动重启应用        | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs` |
+| 看 Pod 起不来的原因  | `kubectl describe pod -n intelligent-cs -l component=api`       |
+| 整体删除（保留 PVC）  | `kubectl delete -k k8s/`                                        |
+
+**几个已固化的约束与坑，改动前请先读这条：**
+
+- **应用固定单副本**（`replicas: 1`，HPA 已注释）。`app-data-pvc` 是 `ReadWriteOnce`，跨节点第二副本挂不上盘；
+  且每个副本都会独立跑 `KeyManage` 轮换 JWT 密钥，并发轮换会互相覆盖导致 token 失效；会话缓存还是 Pod 内本地
+  SQLite，多副本不共享。要扩容需先把这三项改成共享/无状态方案，详见 `k8s/app.yaml` 内注释。
+- **密码要写两处**：`configmap.yaml`（应用连库用）与 `secret.yaml`（基础设施 Pod 启动用）。因为 `config.py` 只读
+  YAML，其 `${path:default}` 占位符是配置树内部引用、不支持读环境变量，没法单靠 Secret 注入。两处不一致时
+  表现为「Pod 都健康但应用连不上库」。
+- **app 的 `database` 子目录由 initContainer 创建**：空 PVC 上没有该目录，主容器的 `subPath` 挂载会失败并卡在
+  `CreateContainerConfigError`。
+- **Elasticsearch 是硬依赖**，清单里已包含；它还带了调 `vm.max_map_count` 的 privileged initContainer，否则启动即报错。
+- **HuggingFace 缓存是 emptyDir**：Pod 重建会重新下载 tokenizer。对启动时间敏感的话换成 PVC 或预置进镜像。
+- **镜像标签与拉取策略需配套**：当前是 `latest` + `IfNotPresent`，配合 kind / minikube 的本地镜像加载；
+  改走镜像仓库时建议换成版本化标签（如 `:v1.0.0`）。
 
 ## 与流萤商城的关系
 

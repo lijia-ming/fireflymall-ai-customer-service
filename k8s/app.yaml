@@ -1,0 +1,186 @@
+# ============================================================
+# 主应用 — 智能客服 FastAPI 服务
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelligent-cs-app
+  namespace: intelligent-cs
+  labels:
+    app: intelligent-customer-service
+    component: api
+spec:
+  # 固定单副本：app-data-pvc 是 ReadWriteOnce（跨节点第二副本会永久 Pending），
+  # 且每个副本都会独立跑 KeyManage 轮换 JWT 密钥，多副本会互相覆盖导致 token 失效。
+  # 横向扩容前需先解决共享存储与密钥轮换的单写者问题。
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelligent-customer-service
+      component: api
+  template:
+    metadata:
+      labels:
+        app: intelligent-customer-service
+        component: api
+    spec:
+      # 空 PVC 上没有 database 子目录，主容器 subPath 挂载会失败（CreateContainerConfigError），
+      # 必须先建目录；uploads/downloads 一并建好（routes/file.py 虽会 makedirs，这里保持一致）
+      initContainers:
+        - name: init-dirs
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - mkdir -p /mnt/app-data/database /mnt/app-data/uploads /mnt/app-data/downloads
+          volumeMounts:
+            - name: data
+              mountPath: /mnt/app-data
+      containers:
+        - name: app
+          image: intelligent-customer-service:latest
+          # IfNotPresent：与 kind / minikube 的 `image load` 本地镜像流程配套
+          #（Always 会让节点去 registry 拉取而 ImagePullBackOff）。
+          # 推送到镜像仓库部署时，建议改用版本化标签（如 :v1.0.0）并保持 IfNotPresent；
+          # 若坚持用 latest + 仓库，则需改成 Always，避免节点沿用旧缓存。
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - secretRef:
+                name: app-secrets
+          env:
+            - name: TZ
+              value: Asia/Shanghai
+            # HF_ENDPOINT / HF_HOME 已固化在镜像里（见 Dockerfile），
+            # 此处不重复声明，避免两处配置漂移；如需覆盖在此追加即可。
+            # 注意下方 huggingface-cache 是 emptyDir：Pod 重建会重新下载
+            # tokenizer，对启动时间敏感的话换成 PVC。
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+            - name: database
+              mountPath: /app/database
+            - name: cache
+              mountPath: /app/cache
+            - name: log
+              mountPath: /app/log
+            - name: huggingface-cache
+              mountPath: /app/huggingface_cache
+          livenessProbe:
+            httpGet:
+              path: /ai/health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ai/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /ai/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            # 60 * 10s = 600s：冷启动需加载 ONNX 注入检测模型 + 首次下载 tokenizer
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 4
+              memory: 8Gi
+      volumes:
+        - name: config
+          configMap:
+            name: app-config
+            items:
+              - key: config.yaml
+                path: config.yaml
+        - name: data
+          persistentVolumeClaim:
+            claimName: app-data-pvc
+        - name: database
+          persistentVolumeClaim:
+            claimName: app-data-pvc
+            subPath: database
+        - name: cache
+          emptyDir: {}
+        - name: log
+          emptyDir: {}
+        - name: huggingface-cache
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intelligent-cs-service
+  namespace: intelligent-cs
+  labels:
+    app: intelligent-customer-service
+    component: api
+spec:
+  selector:
+    app: intelligent-customer-service
+    component: api
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+      protocol: TCP
+  type: ClusterIP
+
+# ============================================================
+# HPA — 暂不启用
+#
+# 当前架构无法横向扩容，原因有三，都属单写者约束：
+#   1. app-data-pvc 为 ReadWriteOnce，跨节点第二副本挂不上盘；
+#   2. 每个副本各自跑 KeyManage 轮换 JWT 密钥，并发轮换会互相覆盖；
+#   3. 会话缓存是 Pod 内本地 SQLite（cache/agent_cache.db），多副本不共享。
+# 需要扩容时先把这三项改成共享/无状态方案（RWX 存储或对象存储、
+# 密钥轮换改为 Redis 分布式锁选主、缓存外置到 Redis），再解注本段。
+# ============================================================
+# ---
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: intelligent-cs-hpa
+#   namespace: intelligent-cs
+#   labels:
+#     app: intelligent-customer-service
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: intelligent-cs-app
+#   minReplicas: 1
+#   maxReplicas: 10
+#   metrics:
+#     - type: Resource
+#       resource:
+#         name: cpu
+#         target:
+#           type: Utilization
+#           averageUtilization: 70
+#     - type: Resource
+#       resource:
+#         name: memory
+#         target:
+#           type: Utilization
+#           averageUtilization: 80

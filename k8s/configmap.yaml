@@ -1,0 +1,135 @@
+# ============================================================
+# ConfigMap — 应用配置（config.yaml）
+#
+# 关于密码：这里的 redis / rabbitmq / mysql / postgres / es 密码是必须留在
+# 本文件里的。config.py 只读 YAML，其 ${path:default} 占位符是「配置树内部
+# 引用」（见 load_config/analysis_yaml_file.py），不支持读环境变量，
+# 所以没法像普通应用那样从 Secret 通过 env 注入。
+#
+# 当前是演示值 123456，改密码时须同时改两处：
+#   1) 本文件（应用侧连库用）
+#   2) secret.yaml 里同名的 Secret（基础设施 Pod 侧启动用）
+# 两者不一致会导致应用连不上库，但 Pod 本身是健康的。
+#
+# 生产环境建议改为：把整份 config.yaml 放进 Secret 用 secretRef 挂载，
+# 或引入外部密钥管理（ESO / Vault）渲染后再挂载。
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: intelligent-cs
+  labels:
+    app: intelligent-customer-service
+data:
+  config.yaml: |
+    server:
+      host: 0.0.0.0
+      port: 8000
+
+    logging:
+      level: 'DEBUG'
+      file_path: './log'
+      formatter: '%(asctime)s [%(threadName)s - %(thread)d] %(levelname)s %(filename)s [%(funcName)s/%(lineno)d] %(message)s'
+      create_file: true
+      max_bytes: 5MB
+      backup_count: 2
+
+    redis:
+      host: redis-service.intelligent-cs.svc.cluster.local
+      port: 6379
+      password: '123456'
+      db: 0
+      max_connections: 20
+
+    AMQP:
+      rabbitmq:
+        username: fufu
+        password: '123456'
+        host: rabbitmq-service.intelligent-cs.svc.cluster.local
+        port: 5672
+        virtual_host: /
+        heartbeat: 600
+        connection_attempts: 3
+        retry_delay: 5
+
+    file:
+      upload_dir: './data/uploads'
+      download_dir: './data/downloads'
+
+    model:
+      name: 'deepseek-v4-flash'
+      params:
+        temperature: 0.8
+        extra_body:
+          thinking:
+            type: 'disabled'
+      vision:
+        name: 'qwen3.7-plus'
+      vocation:
+        name: 'customer service'
+      summary:
+        name: 'deepseek-v4-flash'
+        kwargs:
+          temperature: 1.3
+          extra_body:
+            thinking:
+              type: 'disabled'
+          profile:
+            max_input_tokens: 1m
+        pattern: 'fraction'
+        trigger_threshold: 0.8
+
+    huggingface:
+      mirror: true
+      download_dir: ./huggingface_cache
+
+    databases:
+      mysql:
+        host: mysql-service.intelligent-cs.svc.cluster.local
+        port: 3306
+        user: root
+        password: '123456'
+        db: fireflymall
+      postgres:
+        host: postgres-service.intelligent-cs.svc.cluster.local
+        port: 5432
+        user: postgres
+        password: '123456'
+        db: fireflymall
+      rag:
+        sqlite:
+          db_url: './database/test1.db'
+        es:
+          db_url: 'http://elasticsearch-service.intelligent-cs.svc.cluster.local:9200'
+          index_name: 'goods'
+          username: 'elastic'
+          password: '123456'
+        milvus:
+          collection_name: firefly_mall_faq
+          primary_field: pk
+          metadata_field: metadata
+          text_field: text
+          conn_args:
+            uri: http://milvus-service.intelligent-cs.svc.cluster.local:19530
+            token: root:Milvus
+            db_name: firefly_mall
+          index_params:
+            index_type: IVF_FLAT
+            metric_type: COSINE
+            params:
+              nlist: 128
+          search_params:
+            metric_type: COSINE
+            params:
+              nprobe: 10
+          level: Strong
+          drop_old: false
+
+    email:
+      smtp: 'smtp.qq.com'
+      port: 465
+      sender: 'your-email@qq.com'          # 请替换为真实发件邮箱
+      sender_name: 'your-name'             # 请替换为发件人名称
+      receiver:
+        - 'your-email@qq.com'              # 请替换为接收告警的邮箱

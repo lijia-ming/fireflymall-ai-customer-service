@@ -1,0 +1,258 @@
+# ============================================================
+# Docker Compose — 智能客服系统全栈部署
+#
+# 使用方式：
+#   docker compose up -d
+#
+# 前置准备：
+#   1. 在 .env 文件中填写真实 API Key（参考 .env.template）
+#   2. 确认各个服务的密码与 config.docker.yaml 一致
+#   3. 确保端口不冲突（8000, 6379, 5432, 5672, 3306, 19530 等）
+# ============================================================
+
+# 注：不再声明 version 字段，Compose V2 已将其废弃并会告警
+
+# ---------- 共享网络 ----------
+networks:
+  intelligent-network:
+    driver: bridge
+
+# ---------- 持久化数据卷 ----------
+volumes:
+  redis-data:
+  postgres-data:
+  mysql-data:
+  milvus-data:
+  rabbitmq-data:
+  milvus-etcd-data:
+  milvus-minio-data:
+  elasticsearch-data:
+  app-uploads:
+  app-database:
+
+# ============================================================
+services:
+
+  # ---------- Redis：JWT 密钥管理 & 缓存 ----------
+  redis:
+    image: redis:7-alpine
+    container_name: intelligent-redis
+    restart: unless-stopped
+    command: redis-server --requirepass 123456 --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- PostgreSQL：LangGraph Checkpoint & Store ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: intelligent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: '123456'
+      POSTGRES_DB: fireflymall
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- RabbitMQ：消息队列（记忆中间件） ----------
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: intelligent-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: fufu
+      RABBITMQ_DEFAULT_PASS: '123456'
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"    # AMQP 协议端口
+      - "15672:15672"  # 管理控制台
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ---------- MySQL：应用数据库 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: intelligent-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: '123456'
+      MYSQL_DATABASE: fireflymall
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Milvus：向量数据库（RAG） ----------
+  milvus:
+    image: milvusdb/milvus:v2.4.8
+    container_name: intelligent-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    ports:
+      - "19530:19530"
+    volumes:
+      - milvus-data:/var/lib/milvus
+    networks:
+      - intelligent-network
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Milvus 依赖的 etcd
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: intelligent-milvus-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '4294967296'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    command: |
+      etcd
+      --advertise-client-urls=http://0.0.0.0:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - milvus-etcd-data:/etcd
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Milvus 依赖的 MinIO（S3 兼容对象存储）
+  milvus-minio:
+    image: minio/minio:RELEASE.2024-01-01T16-36-33Z
+    container_name: intelligent-milvus-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio --console-address :9001
+    volumes:
+      - milvus-minio-data:/minio
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ---------- Elasticsearch（可选，如不需要可注释） ----------
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: intelligent-elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - intelligent-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================================
+  # 主应用：智能客服 FastAPI 服务
+  # ============================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: intelligent-customer-service:latest
+    container_name: intelligent-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # 覆盖 config.yaml 中的数据库主机地址（config.py 已支持 YAML 占位符解析）
+      # 但为兼容现有 config.yaml 设计，通过挂载 config.docker.yaml 来实现
+      TZ: Asia/Shanghai
+    volumes:
+      # 将 Docker 专用配置映射为 config.yaml
+      - ./config.docker.yaml:/app/config.yaml:ro
+      # 持久化数据目录
+      - app-uploads:/app/data
+      - app-database:/app/database
+      # 运行时缓存（非持久化，可挂载 tmpfs）
+      - /tmp/app-cache:/app/cache
+      - /tmp/app-log:/app/log
+      - /tmp/app-huggingface-cache:/app/huggingface_cache
+    networks:
+      - intelligent-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
