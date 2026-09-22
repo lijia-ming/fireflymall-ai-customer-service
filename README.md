@@ -219,16 +219,16 @@ S(m) = α·R(m,q) + β·T(m) + γ·F(m) + δ
 
 ### 1. 环境依赖
 
-| 依赖                  | 用途                          | 必装 |
-|---------------------|-----------------------------|----|
-| Python 3.10+        | 运行环境                        | ✅  |
-| Redis               | JWT 密钥、记忆片段游标               | ✅  |
-| RabbitMQ            | 记忆处理失败重试队列                  | ✅  |
-| Milvus              | FAQ 向量检索                    | ✅  |
-| Elasticsearch       | 商品检索（售前工具，**导入期即连接，不可缺**）   | ✅  |
-| SQLite + sqlite-vec | 记忆片段向量库（sqlite-vec 需单独安装扩展） | ✅  |
+| 依赖                  | 用途                               | 必装 |
+|---------------------|----------------------------------|----|
+| Python 3.10+        | 运行环境                             | ✅  |
+| Redis               | JWT 密钥、记忆片段游标                    | ✅  |
+| RabbitMQ            | 记忆处理失败重试队列                       | ✅  |
+| Milvus              | FAQ 向量检索                         | ✅  |
+| Elasticsearch       | 商品检索（售前工具，**导入期即连接，不可缺**）        | ✅  |
+| SQLite + sqlite-vec | 记忆片段向量库（sqlite-vec 需单独安装扩展）      | ✅  |
 | PostgreSQL          | LangGraph Checkpoint / Store 持久化 | ✅  |
-| MySQL               | 商城业务数据（当前以测试桩数据运行）          | 可选 |
+| MySQL               | 商城业务数据（当前以测试桩数据运行）               | 可选 |
 
 > Elasticsearch 是**硬依赖**：`Tools/product_process.py` 在模块导入期就会 `connect_to_elasticsearch`，
 > 而该模块经 `agent/front_desk_salesperson.py` 被 `main.py` 导入，所以 ES 不可达时应用会在启动阶段直接失败。
@@ -370,14 +370,14 @@ curl http://localhost:8000/ai/health
 
 容器内需要挂载 / 会写入的路径：
 
-| 容器内路径                   | 内容                                | 是否必须          |
-|-------------------------|-----------------------------------|---------------|
-| `/app/config.yaml`      | 应用配置（挂载 `config.docker.yaml`）      | **必须**，不挂载启动即 `FileNotFoundError` |
-| `/app/data`             | 上传 / 下载文件                         | 建议持久化         |
-| `/app/database`         | SQLite 记忆库（`test1.db`）             | 建议持久化         |
-| `/app/cache`            | LangGraph SQLite 缓存               | 可选，丢了只是缓存失效   |
-| `/app/log`              | 日志                              | 可选            |
-| `/app/huggingface_cache` | HF 模型缓存（镜像 `HF_HOME` 指向这里）         | 可选，能加速冷启动     |
+| 容器内路径                    | 内容                            | 是否必须                              |
+|--------------------------|-------------------------------|-----------------------------------|
+| `/app/config.yaml`       | 应用配置（挂载 `config.docker.yaml`） | **必须**，不挂载启动即 `FileNotFoundError` |
+| `/app/data`              | 上传 / 下载文件                     | 建议持久化                             |
+| `/app/database`          | SQLite 记忆库（`test1.db`）        | 建议持久化                             |
+| `/app/cache`             | LangGraph SQLite 缓存           | 可选，丢了只是缓存失效                       |
+| `/app/log`               | 日志                            | 可选                                |
+| `/app/huggingface_cache` | HF 模型缓存（镜像 `HF_HOME` 指向这里）    | 可选，能加速冷启动                         |
 
 > **网络注意**：`config.docker.yaml` 里各依赖的 host 写的是 compose 服务名
 > （`redis` / `postgres` / `mysql` / `rabbitmq` / `milvus` / `elasticsearch`），单独 `docker run`
@@ -406,14 +406,14 @@ curl http://localhost:8000/ai/health
 
 常用运维命令：
 
-| 场景        | 命令                                     |
-|-----------|----------------------------------------|
-| 构建 / 重建应用镜像 | `docker compose build app`             |
-| 只重启应用     | `docker compose restart app`            |
-| 跟随日志      | `docker compose logs -f app`            |
-| 进入容器      | `docker compose exec app bash`          |
-| 停止并删除容器（保留数据卷） | `docker compose down`                   |
-| 连数据卷一起清掉  | `docker compose down -v`                |
+| 场景             | 命令                             |
+|----------------|--------------------------------|
+| 构建 / 重建应用镜像    | `docker compose build app`     |
+| 只重启应用          | `docker compose restart app`   |
+| 跟随日志           | `docker compose logs -f app`   |
+| 进入容器           | `docker compose exec app bash` |
+| 停止并删除容器（保留数据卷） | `docker compose down`          |
+| 连数据卷一起清掉       | `docker compose down -v`       |
 
 - 应用配置走 `config.docker.yaml`（已把各依赖的 host 改为 compose 服务名），由 compose 挂载为容器内
   `config.yaml`，无需改本地 `config.yaml`。
@@ -439,15 +439,15 @@ kubectl port-forward -n intelligent-cs svc/intelligent-cs-service 8000:8000
 curl http://localhost:8000/ai/health
 ```
 
-| 文件                     | 内容                                              |
-|------------------------|-------------------------------------------------|
-| `k8s/namespace.yaml`   | 命名空间 `intelligent-cs`                           |
-| `k8s/pvc.yaml`         | 7 个 PVC（postgres / mysql / redis / rabbitmq / app / milvus / es） |
-| `k8s/secret.yaml`      | API Key 与各依赖的密码（**部署前必须替换占位符**）                  |
-| `k8s/configmap.yaml`   | 应用 `config.yaml`（用集群内 DNS 寻址各服务）                 |
-| `k8s/*.yaml`           | redis / postgres / rabbitmq / mysql / milvus / elasticsearch 各自 Deployment + Service |
-| `k8s/app.yaml`         | 应用 Deployment + Service（含 initContainer 建目录与三类探针） |
-| `k8s/ingress.yaml`     | 外部入口（需集群已装 Ingress Controller，含 SSE 透传配置）        |
+| 文件                   | 内容                                                                                   |
+|----------------------|--------------------------------------------------------------------------------------|
+| `k8s/namespace.yaml` | 命名空间 `intelligent-cs`                                                                |
+| `k8s/pvc.yaml`       | 7 个 PVC（postgres / mysql / redis / rabbitmq / app / milvus / es）                     |
+| `k8s/secret.yaml`    | API Key 与各依赖的密码（**部署前必须替换占位符**）                                                      |
+| `k8s/configmap.yaml` | 应用 `config.yaml`（用集群内 DNS 寻址各服务）                                                     |
+| `k8s/*.yaml`         | redis / postgres / rabbitmq / mysql / milvus / elasticsearch 各自 Deployment + Service |
+| `k8s/app.yaml`       | 应用 Deployment + Service（含 initContainer 建目录与三类探针）                                    |
+| `k8s/ingress.yaml`   | 外部入口（需集群已装 Ingress Controller，含 SSE 透传配置）                                            |
 
 **先让集群拿到镜像**，三选一：
 
@@ -470,14 +470,14 @@ minikube image load intelligent-customer-service:latest
 
 常用运维命令：
 
-| 场景            | 命令                                                              |
-|---------------|-----------------------------------------------------------------|
-| 全部资源状态        | `kubectl get all -n intelligent-cs`                             |
-| 应用日志          | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`   |
-| 进入容器          | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
-| 滚动重启应用        | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs` |
-| 看 Pod 起不来的原因  | `kubectl describe pod -n intelligent-cs -l component=api`       |
-| 整体删除（保留 PVC）  | `kubectl delete -k k8s/`                                        |
+| 场景           | 命令                                                                     |
+|--------------|------------------------------------------------------------------------|
+| 全部资源状态       | `kubectl get all -n intelligent-cs`                                    |
+| 应用日志         | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`          |
+| 进入容器         | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
+| 滚动重启应用       | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs`  |
+| 看 Pod 起不来的原因 | `kubectl describe pod -n intelligent-cs -l component=api`              |
+| 整体删除（保留 PVC） | `kubectl delete -k k8s/`                                               |
 
 **几个已固化的约束与坑，改动前请先读这条：**
 

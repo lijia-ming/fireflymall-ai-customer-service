@@ -6,7 +6,8 @@
 
 > The AI customer-service subsystem of **Firefly Mall**, built with **LangGraph + LangChain + FastAPI**. It is a
 > multi-agent system in which a single main agent handles "dispatch + speaking" while three expert agents take care of
-> pre-sales, in-sales, and after-sales. It ships with a self-developed memory framework — **BalancedMultiDimensionMemory (
+> pre-sales, in-sales, and after-sales. It ships with a self-developed memory framework — *
+*BalancedMultiDimensionMemory (
 Balanced Multi-Dimension Memory)** — so the assistant genuinely *remembers* users across sessions and across days.
 
 ![System Architecture](graph.png)
@@ -111,7 +112,8 @@ resolved":
 └── graph.png                # LangGraph system architecture diagram
 ```
 
-> The frontend (Vue 3) is maintained as a separate project under `static/` and is **not** currently included in this warehouse (
+> The frontend (Vue 3) is maintained as a separate project under `static/` and is **not** currently included in this
+> warehouse (
 > gitignored).
 
 > **Model file**: `model/roberta_inj.onnx` (prompt-injection detection model, ~400MB) is not
@@ -253,16 +255,16 @@ manual_intervention).
 
 ### 1. Environment Dependencies
 
-| Dependency          | Purpose                                                                  | Required |
-|---------------------|--------------------------------------------------------------------------|----------|
-| Python 3.10+        | Runtime                                                                  | ✅       |
-| Redis               | JWT keys, memory-fragment cursors                                        | ✅       |
-| RabbitMQ            | Memory-processing failure retry queues                                   | ✅       |
-| Milvus              | FAQ vector search                                                        | ✅       |
-| Elasticsearch       | Product search (pre-sales tools; **connects at import time, not optional**) | ✅       |
-| SQLite + sqlite-vec | Memory-fragment vector store (sqlite-vec extension required)             | ✅       |
-| PostgreSQL          | LangGraph Checkpoint / Store persistence                                 | ✅       |
-| MySQL               | Mall business data (currently runs on test stubs)                        | Optional |
+| Dependency          | Purpose                                                                     | Required |
+|---------------------|-----------------------------------------------------------------------------|----------|
+| Python 3.10+        | Runtime                                                                     | ✅        |
+| Redis               | JWT keys, memory-fragment cursors                                           | ✅        |
+| RabbitMQ            | Memory-processing failure retry queues                                      | ✅        |
+| Milvus              | FAQ vector search                                                           | ✅        |
+| Elasticsearch       | Product search (pre-sales tools; **connects at import time, not optional**) | ✅        |
+| SQLite + sqlite-vec | Memory-fragment vector store (sqlite-vec extension required)                | ✅        |
+| PostgreSQL          | LangGraph Checkpoint / Store persistence                                    | ✅        |
+| MySQL               | Mall business data (currently runs on test stubs)                           | Optional |
 
 > Elasticsearch is a **hard dependency**: `Tools/product_process.py` calls `connect_to_elasticsearch` at module
 > import time, and that module is imported by `main.py` via `agent/front_desk_salesperson.py`. If ES is
@@ -410,14 +412,14 @@ curl http://localhost:8000/ai/health
 
 Paths the container mounts / writes to:
 
-| Container path          | Contents                                              | Required?                                  |
-|-------------------------|-------------------------------------------------------|--------------------------------------------|
-| `/app/config.yaml`      | App config (mount `config.docker.yaml`)               | **Required** — starts with `FileNotFoundError` without it |
-| `/app/data`             | Uploaded / downloaded files                           | Persist recommended                        |
-| `/app/database`         | SQLite memory store (`test1.db`)                      | Persist recommended                        |
-| `/app/cache`            | LangGraph SQLite cache                                | Optional — losing it only drops the cache  |
-| `/app/log`              | Logs                                                  | Optional                                   |
-| `/app/huggingface_cache` | HF model cache (image points `HF_HOME` here)         | Optional — speeds up cold starts           |
+| Container path           | Contents                                     | Required?                                                 |
+|--------------------------|----------------------------------------------|-----------------------------------------------------------|
+| `/app/config.yaml`       | App config (mount `config.docker.yaml`)      | **Required** — starts with `FileNotFoundError` without it |
+| `/app/data`              | Uploaded / downloaded files                  | Persist recommended                                       |
+| `/app/database`          | SQLite memory store (`test1.db`)             | Persist recommended                                       |
+| `/app/cache`             | LangGraph SQLite cache                       | Optional — losing it only drops the cache                 |
+| `/app/log`               | Logs                                         | Optional                                                  |
+| `/app/huggingface_cache` | HF model cache (image points `HF_HOME` here) | Optional — speeds up cold starts                          |
 
 > **Networking caveat**: `config.docker.yaml` uses compose service names as dependency hosts
 > (`redis` / `postgres` / `mysql` / `rabbitmq` / `milvus` / `elasticsearch`), which a standalone
@@ -453,14 +455,14 @@ curl http://localhost:8000/ai/health
 
 Common maintenance commands:
 
-| Task                              | Command                                  |
-|-----------------------------------|------------------------------------------|
-| Build / rebuild the app image     | `docker compose build app`               |
-| Restart only the app              | `docker compose restart app`             |
-| Follow logs                       | `docker compose logs -f app`             |
-| Shell into the container          | `docker compose exec app bash`           |
-| Stop and remove containers (keep volumes) | `docker compose down`            |
-| Also remove the data volumes      | `docker compose down -v`                 |
+| Task                                      | Command                        |
+|-------------------------------------------|--------------------------------|
+| Build / rebuild the app image             | `docker compose build app`     |
+| Restart only the app                      | `docker compose restart app`   |
+| Follow logs                               | `docker compose logs -f app`   |
+| Shell into the container                  | `docker compose exec app bash` |
+| Stop and remove containers (keep volumes) | `docker compose down`          |
+| Also remove the data volumes              | `docker compose down -v`       |
 
 #### 6.4 Kubernetes
 
@@ -480,15 +482,15 @@ kubectl port-forward -n intelligent-cs svc/intelligent-cs-service 8000:8000
 curl http://localhost:8000/ai/health
 ```
 
-| File                   | Contents                                                                        |
-|------------------------|---------------------------------------------------------------------------------|
-| `k8s/namespace.yaml`   | Namespace `intelligent-cs`                                                      |
-| `k8s/pvc.yaml`         | 7 PVCs (postgres / mysql / redis / rabbitmq / app / milvus / es)                |
-| `k8s/secret.yaml`      | API keys and dependency passwords (**replace placeholders before deploying**)  |
-| `k8s/configmap.yaml`   | The app's `config.yaml` (services addressed via in-cluster DNS)                 |
-| `k8s/*.yaml`           | Deployment + Service for redis / postgres / rabbitmq / mysql / milvus / elasticsearch |
-| `k8s/app.yaml`         | App Deployment + Service (initContainer for dirs, three probe types)            |
-| `k8s/ingress.yaml`     | External entry point (requires an Ingress Controller; includes SSE passthrough) |
+| File                 | Contents                                                                              |
+|----------------------|---------------------------------------------------------------------------------------|
+| `k8s/namespace.yaml` | Namespace `intelligent-cs`                                                            |
+| `k8s/pvc.yaml`       | 7 PVCs (postgres / mysql / redis / rabbitmq / app / milvus / es)                      |
+| `k8s/secret.yaml`    | API keys and dependency passwords (**replace placeholders before deploying**)         |
+| `k8s/configmap.yaml` | The app's `config.yaml` (services addressed via in-cluster DNS)                       |
+| `k8s/*.yaml`         | Deployment + Service for redis / postgres / rabbitmq / mysql / milvus / elasticsearch |
+| `k8s/app.yaml`       | App Deployment + Service (initContainer for dirs, three probe types)                  |
+| `k8s/ingress.yaml`   | External entry point (requires an Ingress Controller; includes SSE passthrough)       |
 
 **First, get the image into the cluster** — pick one:
 
@@ -512,14 +514,14 @@ minikube image load intelligent-customer-service:latest
 
 Common maintenance commands:
 
-| Task                                | Command                                                          |
-|-------------------------------------|------------------------------------------------------------------|
-| All resource status                 | `kubectl get all -n intelligent-cs`                              |
-| App logs                            | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`    |
-| Shell into the container            | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
-| Rolling restart                     | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs` |
-| Why a Pod will not start            | `kubectl describe pod -n intelligent-cs -l component=api`        |
-| Delete everything (keeps PVCs)      | `kubectl delete -k k8s/`                                         |
+| Task                           | Command                                                                |
+|--------------------------------|------------------------------------------------------------------------|
+| All resource status            | `kubectl get all -n intelligent-cs`                                    |
+| App logs                       | `kubectl logs -f deploy/intelligent-cs-app -n intelligent-cs`          |
+| Shell into the container       | `kubectl exec -it -n intelligent-cs deploy/intelligent-cs-app -- bash` |
+| Rolling restart                | `kubectl rollout restart deploy/intelligent-cs-app -n intelligent-cs`  |
+| Why a Pod will not start       | `kubectl describe pod -n intelligent-cs -l component=api`              |
+| Delete everything (keeps PVCs) | `kubectl delete -k k8s/`                                               |
 
 **Constraints and pitfalls baked into these manifests — read before changing them:**
 
@@ -545,7 +547,8 @@ Common maintenance commands:
 ## Relationship with Firefly Mall
 
 This project is a **subsystem of Firefly Mall**, deployed independently from the mall's main service. It collaborates
-with the mall's user system (JWT) and business data (products / orders / invoices) over HTTP. The frontend (Vue 3) will not be placed in this warehouse temporarily.
+with the mall's user system (JWT) and business data (products / orders / invoices) over HTTP. The frontend (Vue 3) will
+not be placed in this warehouse temporarily.
 
 ## License
 
